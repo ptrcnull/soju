@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/emersion/go-sasl"
-	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/irc.v3"
 )
 
@@ -1231,25 +1230,16 @@ func unmarshalUsername(rawUsername string) (username, client, network string) {
 func (dc *downstreamConn) authenticate(ctx context.Context, username, password string) error {
 	username, clientName, networkName := unmarshalUsername(username)
 
-	u, err := dc.srv.db.GetUser(ctx, username)
+	srhtAuth, err := checkSrhtToken(ctx, password)
 	if err != nil {
-		return newInvalidUsernameOrPasswordError(fmt.Errorf("user not found: %w", err))
+		return err
 	}
 
-	// Password auth disabled
-	if u.Password == "" {
-		return newInvalidUsernameOrPasswordError(fmt.Errorf("password auth disabled"))
-	}
-
-	err = bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password))
+	dc.user, err = getOrCreateSrhtUser(ctx, dc.srv, srhtAuth)
 	if err != nil {
-		return newInvalidUsernameOrPasswordError(fmt.Errorf("wrong password"))
+		return err
 	}
 
-	dc.user = dc.srv.getUser(username)
-	if dc.user == nil {
-		return fmt.Errorf("user not active")
-	}
 	dc.clientName = clientName
 	dc.networkName = networkName
 	return nil

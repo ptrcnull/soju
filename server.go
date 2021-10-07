@@ -390,6 +390,16 @@ func (s *Server) Serve(ln net.Listener) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	var srhtAuth *SrhtAuth
+	if cookie, _ := req.Cookie("sr.ht.unified-login.v1"); cookie != nil {
+		var err error
+		if srhtAuth, err = checkSrhtCookie(req.Context(), cookie); err != nil {
+			s.Logger.Printf("sr.ht cookie auth failed: %v", err)
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
 	conn, err := websocket.Accept(w, req, &websocket.AcceptOptions{
 		Subprotocols:   []string{"text.ircv3.net"}, // non-compliant, fight me
 		OriginPatterns: s.Config().HTTPOrigins,
@@ -416,7 +426,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	s.handle(newWebsocketIRCConn(conn, remoteAddr))
+	ircConn := newWebsocketIRCConn(conn, remoteAddr)
+	if srhtAuth != nil {
+		ircConn = srhtAuthIRCConn{ircConn, srhtAuth}
+	}
+
+	s.handle(ircConn)
 }
 
 func parseForwarded(h http.Header) map[string]string {
