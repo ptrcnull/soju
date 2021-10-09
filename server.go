@@ -2,6 +2,7 @@ package soju
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -389,6 +390,18 @@ func (s *Server) Serve(ln net.Listener) error {
 	}
 }
 
+type GamjaServerConfig struct {
+	URL         string `json:"url"`
+	Auth        string `json:"auth"`
+	Nick        string `json:"nick"`
+	AutoConnect bool   `json:"autoconnect"`
+	Ping        int    `json:"ping"`
+}
+
+type GamjaConfig struct {
+	Server GamjaServerConfig `json:"server"`
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var srhtAuth *SrhtAuth
 	if cookie, _ := req.Cookie("sr.ht.unified-login.v1"); cookie != nil {
@@ -398,6 +411,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
+	}
+
+	if req.URL.Path == "/config.json" {
+		w.Header().Set("Content-Type", "application/json")
+		nick := "user"
+		if srhtAuth != nil {
+			nick = srhtAuth.Username
+		}
+		json.NewEncoder(w).Encode(GamjaConfig{
+			Server: GamjaServerConfig{
+				URL:         "/socket",
+				Auth:        "disabled",
+				Nick:        nick,
+				AutoConnect: true,
+				Ping:        500,
+			},
+		})
+		return
 	}
 
 	conn, err := websocket.Accept(w, req, &websocket.AcceptOptions{
