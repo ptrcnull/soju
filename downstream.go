@@ -209,6 +209,14 @@ var needAllDownstreamCaps = map[string]string{
 	"draft/extended-monitor": "",
 }
 
+// passthroughDownstreamCaps is the set of capabilities that are directly
+// passed through from the upstream server to downstream clients.
+//
+// This is only effective in single-upstream mode.
+var passthroughCaps = map[string]bool{
+	"draft/account-registration": true,
+}
+
 // passthroughIsupport is the set of ISUPPORT tokens that are directly passed
 // through from the upstream server to downstream clients.
 //
@@ -995,6 +1003,20 @@ func (dc *downstreamConn) updateSupportedCaps() {
 		if supported {
 			dc.setSupportedCap(cap, needAllDownstreamCaps[cap])
 		} else {
+			dc.unsetSupportedCap(cap)
+		}
+	}
+
+	if uc := dc.upstream(); uc != nil {
+		for cap := range passthroughCaps {
+			if v, ok := uc.supportedCaps[cap]; ok {
+				dc.setSupportedCap(cap, v)
+			} else {
+				dc.unsetSupportedCap(cap)
+			}
+		}
+	} else {
+		for cap := range passthroughCaps {
 			dc.unsetSupportedCap(cap)
 		}
 	}
@@ -2343,6 +2365,56 @@ func (dc *downstreamConn) handleMessageRegistered(msg *irc.Message) error {
 				})
 			}
 		}
+	case "REGISTER":
+		var account, password string
+		if err := parseMessageParams(msg, &account, nil, &password); err != nil {
+			return err
+		}
+
+		uc := dc.upstream()
+		if uc == nil {
+			return ircError{&irc.Message{
+				Command: "FAIL",
+				Params:  []string{"REGISTER", "TEMPORARILY_UNAVAILABLE", account, "Bouncer disconnected from upstream network"},
+			}}
+		}
+
+		uc.SendMessageLabeled(dc.id, msg)
+
+		// User may have e.g. EXTERNAL mechanism configured. We do not want to
+		// automatically erase the key pair or any other credentials.
+		if uc.network.SASL.Mechanism != "" && uc.network.SASL.Mechanism != "PLAIN" {
+			break
+		}
+
+		username := account
+		if username == "*" {
+			username = uc.nick
+		}
+
+		dc.logger.Printf("auto-saving account-registration credentials for username %q", username)
+		n := uc.network
+		n.SASL.Mechanism = "PLAIN"
+		n.SASL.Plain.Username = username
+		n.SASL.Plain.Password = password
+		if err := dc.srv.db.StoreNetwork(ctx, dc.user.ID, &n.Network); err != nil {
+			dc.logger.Printf("failed to save account-registration credentials: %v", err)
+		}
+	case "VERIFY":
+		var account string
+		if err := parseMessageParams(msg, &account, nil); err != nil {
+			return err
+		}
+
+		uc := dc.upstream()
+		if uc == nil {
+			return ircError{&irc.Message{
+				Command: "FAIL",
+				Params:  []string{"VERIFY", "TEMPORARILY_UNAVAILABLE", account, "Bouncer disconnected from upstream network"},
+			}}
+		}
+
+		uc.SendMessageLabeled(dc.id, msg)
 	case "CHATHISTORY":
 		var subcommand string
 		if err := parseMessageParams(msg, &subcommand); err != nil {

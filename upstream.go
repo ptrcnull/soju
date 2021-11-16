@@ -33,7 +33,8 @@ var permanentUpstreamCaps = map[string]bool{
 	"server-time":      true,
 	"setname":          true,
 
-	"draft/extended-monitor": true,
+	"draft/account-registration": true,
+	"draft/extended-monitor":     true,
 }
 
 type registrationError string
