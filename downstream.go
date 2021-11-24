@@ -1328,22 +1328,7 @@ func (dc *downstreamConn) welcome(ctx context.Context) error {
 	dc.updateNick()
 	dc.updateRealname()
 	dc.updateAccount()
-
-	if motd := dc.user.srv.Config().MOTD; motd != "" && dc.network == nil {
-		for _, msg := range generateMOTD(dc.srv.prefix(), dc.nick, motd) {
-			dc.SendMessage(msg)
-		}
-	} else {
-		motdHint := "No MOTD"
-		if dc.network != nil {
-			motdHint = "Use /motd to read the message of the day"
-		}
-		dc.SendMessage(&irc.Message{
-			Prefix:  dc.srv.prefix(),
-			Command: irc.ERR_NOMOTD,
-			Params:  []string{dc.nick, motdHint},
-		})
-	}
+	dc.sendMOTD()
 
 	if dc.caps["soju.im/bouncer-networks-notify"] {
 		dc.SendBatch("soju.im/bouncer-networks", nil, nil, func(batchRef irc.TagValue) {
@@ -2400,6 +2385,13 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 				Params:  []string{"PLAIN"},
 			})
 		}
+	case "MOTD":
+		uc := dc.upstream()
+		if uc == nil {
+			dc.sendMOTD()
+			return nil
+		}
+		uc.enqueueCommand(dc, &irc.Message{Command: "MOTD"})
 	case "MONITOR":
 		// MONITOR is unsupported in multi-upstream mode
 		uc := dc.upstream()
@@ -2766,6 +2758,24 @@ func (dc *downstreamConn) handleMessageRegistered(ctx context.Context, msg *irc.
 		uc.SendMessageLabeled(dc.id, msg)
 	}
 	return nil
+}
+
+func (dc *downstreamConn) sendMOTD() {
+	if motd := dc.user.srv.Config().MOTD; motd != "" && dc.network == nil {
+		for _, msg := range generateMOTD(dc.srv.prefix(), dc.nick, motd) {
+			dc.SendMessage(msg)
+		}
+	} else {
+		motdHint := "No MOTD"
+		if dc.network != nil {
+			motdHint = "Use /motd to read the message of the day"
+		}
+		dc.SendMessage(&irc.Message{
+			Prefix:  dc.srv.prefix(),
+			Command: irc.ERR_NOMOTD,
+			Params:  []string{dc.nick, motdHint},
+		})
+	}
 }
 
 func (dc *downstreamConn) handleNickServPRIVMSG(ctx context.Context, uc *upstreamConn, text string) {

@@ -300,6 +300,12 @@ func (uc *upstreamConn) endPendingCommands() {
 					Command: irc.ERR_SASLABORTED,
 					Params:  []string{dc.nick, "SASL authentication aborted"},
 				})
+			case "MOTD":
+				dc.SendMessage(&irc.Message{
+					Prefix:  dc.srv.prefix(),
+					Command: irc.ERR_NOMOTD,
+					Params:  []string{dc.nick, "No MOTD"},
+				})
 			default:
 				panic(fmt.Errorf("Unsupported pending command %q", pendingCmd.msg.Command))
 			}
@@ -318,7 +324,7 @@ func (uc *upstreamConn) sendNextPendingCommand(cmd string) {
 
 func (uc *upstreamConn) enqueueCommand(dc *downstreamConn, msg *irc.Message) {
 	switch msg.Command {
-	case "LIST", "WHO", "AUTHENTICATE":
+	case "LIST", "WHO", "AUTHENTICATE", "MOTD":
 		// Supported
 	default:
 		panic(fmt.Errorf("Unsupported pending command %q", msg.Command))
@@ -727,6 +733,10 @@ func (uc *upstreamConn) handleMessage(msg *irc.Message) error {
 				dc.SendMessage(msg)
 			}
 		})
+	case irc.RPL_MOTDSTART, irc.RPL_MOTD:
+		if dc, _ := uc.currentPendingCommand("MOTD"); dc != nil {
+			dc.SendMessage(msg)
+		}
 	case irc.ERR_NOMOTD, irc.RPL_ENDOFMOTD:
 		if !uc.casemapIsSet {
 			// upstream did not send any CASEMAPPING token, thus
@@ -743,13 +753,9 @@ func (uc *upstreamConn) handleMessage(msg *irc.Message) error {
 			return nil
 		}
 
-		uc.forEachDownstreamByID(downstreamID, func(dc *downstreamConn) {
-			dc.SendMessage(&irc.Message{
-				Prefix:  uc.srv.prefix(),
-				Command: msg.Command,
-				Params:  msg.Params,
-			})
-		})
+		if dc, _ := uc.dequeueCommand("MOTD"); dc != nil {
+			dc.SendMessage(msg)
+		}
 	case "BATCH":
 		var tag string
 		if err := parseMessageParams(msg, &tag); err != nil {
@@ -1594,8 +1600,6 @@ func (uc *upstreamConn) handleMessage(msg *irc.Message) error {
 	case irc.RPL_STATSVLINE, rpl_statsping, irc.RPL_STATSBLINE, irc.RPL_STATSDLINE:
 		fallthrough
 	case rpl_localusers, rpl_globalusers:
-		fallthrough
-	case irc.RPL_MOTDSTART, irc.RPL_MOTD:
 		// Ignore these messages if they're part of the initial registration
 		// message burst. Forward them if the user explicitly asked for them.
 		if !uc.gotMotd {
