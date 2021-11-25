@@ -402,6 +402,10 @@ type GamjaConfig struct {
 	Server GamjaServerConfig `json:"server"`
 }
 
+type SrhtAPIMetadata struct {
+	Scopes []string `json:"scopes"`
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var srhtAuth *SrhtAuth
 	if cookie, _ := req.Cookie("sr.ht.unified-login.v1"); cookie != nil {
@@ -413,7 +417,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	if req.URL.Path == "/config.json" {
+	switch req.URL.Path {
+	case "/config.json":
 		w.Header().Set("Content-Type", "application/json")
 		nick := "user"
 		if srhtAuth != nil {
@@ -427,6 +432,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				AutoConnect: true,
 				Ping:        500,
 			},
+		})
+		return
+	case "/query/api-meta.json":
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SrhtAPIMetadata{
+			Scopes: []string{"IRC"},
 		})
 		return
 	}
