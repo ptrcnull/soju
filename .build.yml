@@ -4,7 +4,7 @@ packages:
   - rsync
   - scdoc
 secrets:
-  - 5874ac5a-905e-4596-a117-fed1401c60ce
+  - 5874ac5a-905e-4596-a117-fed1401c60ce # deploy SSH key
 sources:
   - https://git.sr.ht/~emersion/soju
 tasks:
