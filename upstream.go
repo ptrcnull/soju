@@ -162,7 +162,24 @@ func connectToUpstream(ctx context.Context, network *network) (*upstreamConn, er
 		host, _, err := net.SplitHostPort(u.Host)
 		if err != nil {
 			host = u.Host
-			addr = u.Host + ":6697"
+			addr = net.JoinHostPort(host, "6697")
+		}
+
+		// The TLS cert must match the name specified by the user to prevent
+		// man-in-the-middle attacks
+		tlsConfig := &tls.Config{ServerName: host, NextProtos: []string{"irc"}}
+
+		// When the user hasn't set a non-default port, perform a DNS SRV lookup
+		if strings.HasSuffix(addr, ":6697") {
+			_, srv, err := net.DefaultResolver.LookupSRV(ctx, "ircs", "tcp", host)
+			if dnsErr, ok := err.(*net.DNSError); (!ok && err != nil) || (ok && dnsErr.IsTemporary) {
+				return nil, fmt.Errorf("failed to lookup SRV record for %q: %v", host, err)
+			}
+			if len(srv) > 0 {
+				logger.Debugf("redirected via DNS SRV: %v -> %v:%v", addr, srv[0].Target, srv[0].Port)
+				host = srv[0].Target
+				addr = net.JoinHostPort(host, fmt.Sprintf("%v", srv[0].Port))
+			}
 		}
 
 		dialer.LocalAddr, err = network.user.localTCPAddrForHost(ctx, host)
@@ -172,7 +189,6 @@ func connectToUpstream(ctx context.Context, network *network) (*upstreamConn, er
 
 		logger.Printf("connecting to TLS server at address %q", addr)
 
-		tlsConfig := &tls.Config{ServerName: host, NextProtos: []string{"irc"}}
 		if network.SASL.Mechanism == "EXTERNAL" {
 			if network.SASL.External.CertBlob == nil {
 				return nil, fmt.Errorf("missing certificate for authentication")
