@@ -635,6 +635,16 @@ func (cm *upstreamChannelCasemapMap) Value(name string) *upstreamChannel {
 	return entry.value.(*upstreamChannel)
 }
 
+type upstreamUserCasemapMap struct{ casemapMap }
+
+func (cm *upstreamUserCasemapMap) Value(name string) *upstreamUser {
+	entry, ok := cm.innerMap[cm.casemap(name)]
+	if !ok {
+		return nil
+	}
+	return entry.value.(*upstreamUser)
+}
+
 type channelCasemapMap struct{ casemapMap }
 
 func (cm *channelCasemapMap) Value(name string) *Channel {
@@ -732,6 +742,19 @@ func parseChatHistoryBound(param string) time.Time {
 // RPL_WHOSPCRPL messages.
 var whoxFields = []byte("tcuihsnfdlaor")
 
+func parseWHOXOptions(options string) (fields, whoxToken string) {
+	optionsParts := strings.SplitN(options, "%", 2)
+	// TODO: add support for WHOX flags in optionsParts[0]
+	if len(optionsParts) == 2 {
+		optionsParts := strings.SplitN(optionsParts[1], ",", 2)
+		fields = strings.ToLower(optionsParts[0])
+		if len(optionsParts) == 2 && strings.Contains(fields, "t") {
+			whoxToken = optionsParts[1]
+		}
+	}
+	return fields, whoxToken
+}
+
 type whoxInfo struct {
 	Token    string
 	Username string
@@ -743,8 +766,8 @@ type whoxInfo struct {
 	Realname string
 }
 
-func (info *whoxInfo) get(field byte) string {
-	switch field {
+func (info *whoxInfo) get(k byte) string {
+	switch k {
 	case 't':
 		return info.Token
 	case 'c':
@@ -779,6 +802,27 @@ func (info *whoxInfo) get(field byte) string {
 	return ""
 }
 
+func (info *whoxInfo) set(k byte, v string) {
+	switch k {
+	case 't':
+		info.Token = v
+	case 'u':
+		info.Username = v
+	case 'h':
+		info.Hostname = v
+	case 's':
+		info.Server = v
+	case 'n':
+		info.Nickname = v
+	case 'f':
+		info.Flags = v
+	case 'a':
+		info.Account = v
+	case 'r':
+		info.Realname = v
+	}
+}
+
 func generateWHOXReply(prefix *irc.Prefix, nick, fields string, info *whoxInfo) *irc.Message {
 	if fields == "" {
 		return &irc.Message{
@@ -806,6 +850,36 @@ func generateWHOXReply(prefix *irc.Prefix, nick, fields string, info *whoxInfo) 
 		Command: rpl_whospcrpl,
 		Params:  append([]string{nick}, values...),
 	}
+}
+
+func parseWHOXReply(msg *irc.Message, fields string) (*whoxInfo, error) {
+	if msg.Command != rpl_whospcrpl {
+		return nil, fmt.Errorf("invalid WHOX reply %q", msg.Command)
+	} else if len(msg.Params) == 0 {
+		return nil, fmt.Errorf("invalid RPL_WHOSPCRPL: no params")
+	}
+
+	fieldSet := make(map[byte]bool)
+	for i := 0; i < len(fields); i++ {
+		fieldSet[fields[i]] = true
+	}
+
+	var info whoxInfo
+	values := msg.Params[1:]
+	for _, field := range whoxFields {
+		if !fieldSet[field] {
+			continue
+		}
+
+		if len(values) == 0 {
+			return nil, fmt.Errorf("invalid RPL_WHOSPCRPL: missing value for field %q", string(field))
+		}
+
+		info.set(field, values[0])
+		values = values[1:]
+	}
+
+	return &info, nil
 }
 
 var isupportEncoder = strings.NewReplacer(" ", "\\x20", "\\", "\\x5C")

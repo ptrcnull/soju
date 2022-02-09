@@ -99,6 +99,66 @@ func (uc *upstreamChannel) updateAutoDetach(dur time.Duration) {
 	})
 }
 
+type upstreamUser struct {
+	Nickname string
+	Username string
+	Hostname string
+	Server   string
+	Flags    string
+	Account  string
+	Realname string
+}
+
+func (uu *upstreamUser) hasWHOXFields(fields string) bool {
+	for i := 0; i < len(fields); i++ {
+		ok := false
+		switch fields[i] {
+		case 'n':
+			ok = uu.Nickname != ""
+		case 'u':
+			ok = uu.Username != ""
+		case 'h':
+			ok = uu.Hostname != ""
+		case 's':
+			ok = uu.Server != ""
+		case 'f':
+			ok = uu.Flags != ""
+		case 'a':
+			ok = uu.Account != ""
+		case 'r':
+			ok = uu.Realname != ""
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (uu *upstreamUser) updateFrom(update *upstreamUser) {
+	if update.Nickname != "" {
+		uu.Nickname = update.Nickname
+	}
+	if update.Username != "" {
+		uu.Username = update.Username
+	}
+	if update.Hostname != "" {
+		uu.Hostname = update.Hostname
+	}
+	if update.Server != "" {
+		uu.Server = update.Server
+	}
+	if update.Flags != "" {
+		uu.Flags = update.Flags
+	}
+	if update.Account != "" {
+		uu.Account = update.Account
+	}
+	if update.Realname != "" {
+		uu.Realname = update.Realname
+	}
+}
+
 type pendingUpstreamCommand struct {
 	downstreamID uint64
 	msg          *irc.Message
@@ -124,6 +184,7 @@ type upstreamConn struct {
 	realname      string
 	modes         userModes
 	channels      upstreamChannelCasemapMap
+	users         upstreamUserCasemapMap
 	supportedCaps map[string]string
 	caps          map[string]bool
 	batches       map[string]batch
@@ -885,6 +946,10 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			}
 		}
 
+		uc.cacheUserInfo(msg.Prefix.Name, &upstreamUser{
+			Nickname: newNick,
+		})
+
 		if !me {
 			uc.forEachDownstream(func(dc *downstreamConn) {
 				dc.SendMessage(dc.marshalMessage(msg, uc.network))
@@ -904,6 +969,10 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		if err := parseMessageParams(msg, &newRealname); err != nil {
 			return err
 		}
+
+		uc.cacheUserInfo(msg.Prefix.Name, &upstreamUser{
+			Realname: newRealname,
+		})
 
 		// TODO: consider appending this message to logs
 
@@ -927,6 +996,15 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 		var channels string
 		if err := parseMessageParams(msg, &channels); err != nil {
 			return err
+		}
+
+		if len(msg.Params) > 2 { // extended-join
+			account := msg.Params[1]
+			realname := msg.Params[2]
+			uc.cacheUserInfo(msg.Prefix.Name, &upstreamUser{
+				Account:  account,
+				Realname: realname,
+			})
 		}
 
 		for _, ch := range strings.Split(channels, ",") {
@@ -1026,6 +1104,8 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 				uc.appendLog(ch.Name, msg)
 			}
 		}
+
+		uc.users.Delete(msg.Prefix.Name)
 
 		if msg.Prefix.Name != uc.nick {
 			uc.forEachDownstream(func(dc *downstreamConn) {
@@ -1353,6 +1433,12 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			return nil
 		}
 
+		parts := strings.SplitN(trailing, " ", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("malformed RPL_WHOREPLY: failed to parse real name")
+		}
+		realname := parts[1]
+
 		if channel != "*" {
 			channel = dc.marshalEntity(uc.network, channel)
 		}
@@ -1361,6 +1447,15 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 			Prefix:  dc.srv.prefix(),
 			Command: irc.RPL_WHOREPLY,
 			Params:  []string{dc.nick, channel, username, host, server, nick, flags, trailing},
+		})
+
+		uc.cacheUserInfo(nick, &upstreamUser{
+			Username: username,
+			Hostname: host,
+			Server:   server,
+			Nickname: nick,
+			Flags:    flags,
+			Realname: realname,
 		})
 	case rpl_whospcrpl:
 		dc, cmd := uc.currentPendingCommand("WHO")
@@ -1372,6 +1467,26 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 
 		// Only supported in single-upstream mode, so forward as-is
 		dc.SendMessage(msg)
+
+		if len(cmd.Params) > 1 {
+			fields, _ := parseWHOXOptions(cmd.Params[1])
+			if strings.IndexByte(fields, 'n') < 0 {
+				return nil
+			}
+			info, err := parseWHOXReply(msg, fields)
+			if err != nil {
+				return err
+			}
+			uc.cacheUserInfo(info.Nickname, &upstreamUser{
+				Nickname: info.Nickname,
+				Username: info.Username,
+				Hostname: info.Hostname,
+				Server:   info.Server,
+				Flags:    info.Flags,
+				Account:  info.Account,
+				Realname: info.Realname,
+			})
+		}
 	case irc.RPL_ENDOFWHO:
 		var name string
 		if err := parseMessageParams(msg, nil, &name); err != nil {
@@ -1596,7 +1711,33 @@ func (uc *upstreamConn) handleMessage(ctx context.Context, msg *irc.Message) err
 				Params:  []string{dc.nick, dc.marshalEntity(uc.network, nick), reason},
 			})
 		})
-	case "AWAY", "ACCOUNT":
+	case "AWAY":
+		if msg.Prefix == nil {
+			return fmt.Errorf("expected a prefix")
+		}
+
+		// Update user flags, if we already have the flags cached
+		uu := uc.users.Value(msg.Prefix.Name)
+		if uu != nil && uu.Flags != "" {
+			flags := uu.Flags
+			if isAway := len(msg.Params) > 0; isAway {
+				flags = strings.ReplaceAll(flags, "H", "G")
+			} else {
+				flags = strings.ReplaceAll(flags, "G", "H")
+			}
+			uc.cacheUserInfo(msg.Prefix.Name, &upstreamUser{
+				Flags: flags,
+			})
+		}
+
+		uc.forEachDownstream(func(dc *downstreamConn) {
+			dc.SendMessage(&irc.Message{
+				Prefix:  dc.marshalUserPrefix(uc.network, msg.Prefix),
+				Command: msg.Command,
+				Params:  msg.Params,
+			})
+		})
+	case "ACCOUNT":
 		if msg.Prefix == nil {
 			return fmt.Errorf("expected a prefix")
 		}
@@ -2181,5 +2322,62 @@ func (uc *upstreamConn) updateMonitor() {
 
 	for _, target := range removeList {
 		uc.monitored.Delete(target)
+	}
+}
+
+func (uc *upstreamConn) getCachedWHO(mask, fields string) (l []*upstreamUser, ok bool) {
+	// Non-extended WHO fields
+	if fields == "" {
+		fields = "cuhsnfdr"
+	}
+
+	// Some extensions are required to keep our cached state in sync. We could
+	// require setname for 'r' and chghost for 'h'/'s', but servers usually
+	// implement a QUIT/JOIN fallback, so let's not bother.
+	if strings.IndexByte(fields, 'a') >= 0 && !uc.caps["account-notify"] {
+		return nil, false
+	}
+	if strings.IndexByte(fields, 'f') >= 0 && !uc.caps["away-notify"] {
+		return nil, false
+	}
+
+	if uu := uc.users.Value(mask); uu != nil {
+		if uu.hasWHOXFields(fields) {
+			return []*upstreamUser{uu}, true
+		}
+	} else if uch := uc.channels.Value(mask); uch != nil {
+		l = make([]*upstreamUser, 0, len(uch.Members.innerMap))
+		for nick := range uch.Members.innerMap {
+			uu := uc.users.Value(nick)
+			if uu == nil || !uu.hasWHOXFields(fields) {
+				return nil, false
+			}
+			l = append(l, uu)
+		}
+		return l, true
+	}
+
+	return nil, false
+}
+
+func (uc *upstreamConn) cacheUserInfo(nick string, info *upstreamUser) {
+	if nick == "" || info.Nickname == "" {
+		panic("cacheUserInfo called with empty nickname")
+	}
+
+	uu := uc.users.Value(nick)
+	if uu == nil {
+		if info.Nickname != "" {
+			nick = info.Nickname
+		} else {
+			info.Nickname = nick
+		}
+		uc.users.SetValue(nick, info)
+	} else {
+		uu.updateFrom(info)
+		if info.Nickname != "" && nick != info.Nickname {
+			uc.users.Delete(nick)
+			uc.users.SetValue(info.Nickname, uu)
+		}
 	}
 }
