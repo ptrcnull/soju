@@ -232,6 +232,7 @@ var permanentDownstreamCaps = map[string]string{
 	"soju.im/bouncer-networks":        "",
 	"soju.im/bouncer-networks-notify": "",
 	"soju.im/read":                    "",
+	"soju.im/no-implicit-names":       "",
 }
 
 // needAllDownstreamCaps is the list of downstream capabilities that
