@@ -9,6 +9,8 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -196,6 +198,11 @@ func init() {
 			desc:   "print help message",
 			handle: handleServiceHelp,
 		},
+		"rollback": {
+			usage:  "<client name>",
+			desc:   "send all the scrollback to the client <client name> after reconnect",
+			handle: handleServiceRollback,
+		},
 		"network": {
 			children: serviceCommandSet{
 				"create": {
@@ -308,6 +315,42 @@ func init() {
 			admin: true,
 		},
 	}
+}
+
+func handleServiceRollback(ctx context.Context, dc *downstreamConn, params []string) error {
+	if len(params) != 1 {
+		sendServicePRIVMSG(dc, "usage: rollback <client name>")
+		return nil
+	}
+
+	var receipts []DeliveryReceipt
+
+	entries, err := os.ReadDir(dc.user.msgStore.(*fsMessageStore).root + "/" + dc.network.Name)
+	if err != nil {
+		sendServicePRIVMSG(dc, "error readdir: " + err.Error())
+		return err
+	}
+
+	for _, entry := range entries {
+		channel := entry.Name()
+		id := formatFSMsgID(dc.network.ID, channel, time.UnixMilli(0), -1)
+		dc.network.delivered.StoreID(channel, params[0], id)
+		receipts = append(receipts, DeliveryReceipt{
+			Target:        channel,
+			InternalMsgID: id,
+		})
+	}
+
+	log.Printf("%#v\n", receipts)
+
+	err = dc.srv.db.StoreClientDeliveryReceipts(ctx, dc.network.ID, params[0], receipts)
+	if err != nil {
+		sendServicePRIVMSG(dc, "error db: " + err.Error())
+		return err
+	}
+
+	sendServicePRIVMSG(dc, "wow it worked")
+	return nil
 }
 
 func appendServiceCommandSetHelp(cmds serviceCommandSet, prefix []string, admin bool, l *[]string) {
